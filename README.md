@@ -1,10 +1,77 @@
 # ROLMA
 
-DSPy-based question answering system using the ROMA architecture.
+DSPy-based question answering system inspired by [ROMA](https://github.com/sentient-agi/ROMA) (Recursive Open Meta-Agents).
+
+This repo contains two versions:
+
+| Version | Executor | How it works | Requires Deno? |
+|---------|----------|--------------|----------------|
+| `app.py` (ReAct) | ReAct + terminal tool | Uses shell `grep` to search KB files | No |
+| `app_rlm.py` (RLM) | RLM | Loads KB as dict, uses `llm_query_batched` | Yes |
+
+## What is RLM?
+
+RLM (Recursive Language Model) comes from:
+- **Paper**: [Recursive Language Models (arxiv.org/abs/2512.24601v1)](https://arxiv.org/abs/2512.24601v1)
+- **GitHub**: [alexzhang13/rlm](https://github.com/alexzhang13/rlm)
+
+RLM is a general plug-and-play inference library for Recursive Language Models, supporting various sandboxes. The LLM uses a REPL to programmatically explore large contexts via `llm_query`/`llm_query_batched` instead of stuffing everything into the prompt.
+
+This repo contains two versions:
+
+| Version | Executor | How it works | Requires Deno? |
+|---------|----------|--------------|----------------|
+| `app.py` (ReAct) | ReAct + terminal tool | Uses shell `grep` to search KB files | No |
+| `app_rlm.py` (RLM) | RLM | Loads KB as dict, uses `llm_query_batched` | Yes |
+
+## Quick Start
+
+```bash
+# ReAct version (default)
+./run.sh
+
+# RLM version
+./run_rlm.sh
+```
+
+## What's the difference?
+
+### ReAct (`app.py`)
+- Uses **DSPy ReAct** with a `terminal` tool
+- The LLM executes shell commands (`grep`, `cat`, etc.) to search the KB
+- Simpler setup, no Deno required
+- Good for smaller knowledge bases
+
+### RLM (`app_rlm.py`)
+- Uses **DSPy RLM** (Retrieve-LLM-Maybe)
+- KB loaded as nested Python dict via `dir_to_dict()`
+- LLM uses `llm_query_batched` within a REPL to chunk and process the KB
+- Better for large contexts (1M+ tokens)
+- Requires Deno for the Pyodide sandbox
+
+## Architecture
+
+Both versions share the same core:
+
+```
+Query → Atomizer (atomic vs planned?)
+       ├── Atomic → Executor (KB retrieval + LLM)
+       └── Planned → Planner → Subtasks → Executor → Aggregator
+```
+
+- **Atomizer**: Classifies tasks as atomic or requiring planning
+- **Planner**: Decomposes complex goals into subtasks with dependencies
+- **Executor**: Retrieves info from KB and generates answer
+- **Aggregator**: Synthesizes subtask results
 
 ## Setup
 
-1. Create a `.env` file with your OpenRouter API key:
+1. **For RLM version only**: Install Deno (required for Pyodide/WASM sandbox):
+   ```bash
+   curl -fsSL https://deno.land/install.sh | sh
+   ```
+
+2. Create a `.env` file with your OpenRouter API key:
    ```
    OPENROUTER_API_KEY=your_key_here
    ```
@@ -25,13 +92,18 @@ If not set, telemetry runs in no-op mode (traces are generated but not exported)
 
 ## Run
 
+Both scripts run inside Docker and expect a `knowledge_base/` folder in the current directory.
+
 ```bash
-./run.sh
+./run.sh        # ReAct version
+./run_rlm.sh    # RLM version
 ```
 
-The app runs inside Docker and expects a `knowledge_base/` folder in the current directory. Type `quit` to exit.
+Type `quit` to exit.
 
-If you don't have a knowledge base on hand and want to test this out quickly you can use:
+## Testing without a Knowledge Base
+
+If you don't have a knowledge base on hand:
 ```bash
 uv run --with pyyaml,datasets python - <<'EOF'
 import yaml, json, os

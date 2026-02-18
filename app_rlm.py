@@ -321,14 +321,6 @@ class DAGOrchestrator:
         initial_goal: Optional[str] = None,
         parent_id: Optional[str] = None,
     ) -> str:
-        if depth == 0:
-            goal += (
-                "\n\n<post_scriptum_for_agent>\n"
-                "Please ensure your answer is informed by /knowledge_base/**/*.\n"
-                "Hypothesize about the inquirer's latent space position.\n"
-                "</post_scriptum_for_agent>"
-            )
-
         # 1. Identify Node
         node_id = self._create_node(goal, depth, parent_id)
         existing_node = self.nodes[node_id]

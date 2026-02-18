@@ -9,6 +9,10 @@ WORKDIR /app
 
 COPY . /app/
 
-RUN uv pip install dspy openinference-instrumentation-dspy openinference-instrumentation-litellm pyvis brotli rich
+# Install DSPy from GitHub - PyPI release has broken RLM module (as of 2026-02-17)
+RUN uv pip install "git+https://github.com/stanfordnlp/dspy" openinference-instrumentation-dspy openinference-instrumentation-litellm pyvis brotli rich
+
+RUN curl -fsSL https://deno.land/install.sh | sh && \
+    ln -s /root/.deno/bin/deno /usr/local/bin/deno
 
 CMD ["uv", "run", "app.py"]
