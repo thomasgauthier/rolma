@@ -16,7 +16,7 @@
 # licensed under Apache 2.0. The code has been modified for knowledge base execution.
 
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import dspy
 from pydantic import BaseModel, Field
@@ -34,10 +34,10 @@ class SubTask(BaseModel):
     dependencies: List[str] = Field(
         default_factory=list, description="List of subtask IDs this depends on"
     )
-    result: str = Field(
+    result: Optional[str] = Field(
         default=None, description="Result of subtask execution (for aggregation)"
     )
-    context_input: str = Field(
+    context_input: Optional[str] = Field(
         default=None,
         description="Context from dependent tasks (left-to-right flow)",
     )

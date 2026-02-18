@@ -15,37 +15,23 @@
 # This file contains code derived from ROMA (https://github.com/sentient-agi/ROMA),
 # licensed under Apache 2.0. The code has been modified for knowledge base execution.
 
-
-from typing import Optional
+from typing import List, Optional
 
 import dspy
+
+from modules.aggregator import aggregator
+from modules.atomizer import atomizer
+from modules.planner import planner
+from tools import terminal
 
 
 class ExecutorSignature(dspy.Signature):
     """
     # REPOSITORY CONTEXT
 
-    Working with `context` - a file tree dictionary where:
-    - Keys are file/folder names
-    - Values are either strings (file contents) or nested dicts (subdirectories)
+    Working with `/knowledge_base/` - a knowledge base containing documents from one more sources.
 
-    Start by inspecting the structure before doing anything else:
-
-    ```python
-    def show_tree(d, prefix=""):
-        for key, val in sorted(d.items()):
-            if isinstance(val, dict):
-                print(f"{prefix}{key}/")
-                show_tree(val, prefix + "  ")
-            else:
-                print(f"{prefix}{key} ({len(val)} chars)")
-
-    show_tree(context)
-    ```
-
-    Then decide on a chunking strategy based on what you see (by subdirectory, by file, by size),
-    and use `llm_query_batched` to process chunks in parallel before aggregating into your final answer.
-    Use SUBMIT(output) to return your final answer — do not return until you have fully addressed the goal.
+    Files are plain text transcripts. Use `grep` for searching (`-C`, `-A`, and `-B` options are useful for understanding search results withing their context), read selectively.
 
     # Executor — Instruction Prompt
 
@@ -93,18 +79,16 @@ class ExecutorSignature(dspy.Signature):
     """
 
     goal: str = dspy.InputField(description="Task that needs to be executed")
-    execution_context: Optional[str] = dspy.InputField(
+    context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
     )
-    context: Optional[dict] = dspy.InputField(
-        default=None,
-        description="File tree knowledge base: nested dict of filename -> content or subdir",
-    )
     output: str = dspy.OutputField(description="Execution result")
-    sources: list[str] = dspy.OutputField(description="Information sources used")
+    sources: Optional[List[str]] = dspy.OutputField(
+        default_factory=list, description="Information sources used"
+    )
 
 
-executor = dspy.RLM(ExecutorSignature)
+executor = dspy.ReAct(ExecutorSignature, tools=[terminal])
 
 executor_demos = [
     dspy.Example(

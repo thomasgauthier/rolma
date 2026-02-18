@@ -64,6 +64,19 @@ Query → Atomizer (atomic vs planned?)
 - **Executor**: Retrieves info from KB and generates answer
 - **Aggregator**: Synthesizes subtask results
 
+## Running the ReAct Version
+
+The ReAct version (`app.py`) uses a **terminal tool** (not sandboxed). The LLM can execute shell commands like `grep`, `cat`, `ls`, etc. on the host system.
+
+Mount only `knowledge_base/` to limit filesystem access:
+
+```bash
+docker build -t rolma .
+docker run -it -v "$(pwd)/knowledge_base:/app/knowledge_base" rolma
+```
+
+The RLM version (`app_rlm.py`) uses a Pyodide/WASM sandbox instead.
+
 ## Setup
 
 1. **For RLM version only**: Install Deno (required for Pyodide/WASM sandbox):
@@ -88,7 +101,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-endpoint.com
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic your_auth"
 ```
 
-If not set, telemetry runs in no-op mode (traces are generated but not exported).
+If not set, telemetry is disabled entirely.
 
 ## Run
 

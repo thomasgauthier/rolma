@@ -2,9 +2,8 @@
 
 import asyncio
 import hashlib
-import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
@@ -20,11 +19,11 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.tree import Tree as RichTree
 
-from modules import aggregator, atomizer, executor, planner
+from modules_rlm import aggregator, atomizer, executor, planner
 from telemetry import trace_and_capture
 
 lm_kwargs = {
-    "model": "openrouter/deepseek/deepseek-v3.2",
+    "model": "openrouter/moonshotai/kimi-k2.5",
 }
 
 lm = dspy.LM(**lm_kwargs)
@@ -127,28 +126,16 @@ def validate_plan(prediction):
 
 def validate_execution_output(prediction):
     """Prevents the 'None' result crash by ensuring output exists."""
-    if not hasattr(prediction, "output") or not isinstance(prediction.output, str):
-        raise ValueError("Executor returned None or missing output field.")
+    if prediction is None:
+        raise ValueError("Executor returned None prediction.")
+    output = getattr(prediction, "output", None)
+    if output is None:
+        raise ValueError("Executor returned None output field.")
+    if not isinstance(output, str):
+        raise ValueError(f"Executor returned non-string output: {type(output)}")
+    if not output.strip():
+        raise ValueError("Executor returned empty output.")
     return True
-
-
-def safe_serialize(obj):
-    # Handle Enums first
-    if isinstance(obj, Enum):
-        return obj.value
-    # Handle Dataclasses
-    if hasattr(obj, "__dataclass_fields__"):
-        return {k: safe_serialize(v) for k, v in asdict(obj).items()}
-    # Handle Pydantic/DSPy models
-    if hasattr(obj, "dict"):
-        return {k: safe_serialize(v) for k, v in obj.dict().items()}
-    # Handle Lists/Tuples
-    if isinstance(obj, (list, tuple)):
-        return [safe_serialize(i) for i in obj]
-    # Handle Dictionaries
-    if isinstance(obj, dict):
-        return {k: safe_serialize(v) for k, v in obj.items()}
-    return obj
 
 
 def dir_to_dict(path: str):
@@ -187,7 +174,6 @@ class DAGOrchestrator:
     def __init__(
         self,
         max_depth: int = 3,
-        checkpoint_path: str = "checkpoint.json",
         knowledge_base_path: str = "/knowledge_base/",
     ):
         # Assuming atomizer, planner, executor, aggregator are defined globally
@@ -197,65 +183,14 @@ class DAGOrchestrator:
         self.aggregator = aggregator
 
         self.max_depth = max_depth
-        self.checkpoint_path = checkpoint_path
         self.nodes: Dict[str, NodeTrace] = {}
         self.root_id: Optional[str] = None
         self.knowledge_base = dir_to_dict(knowledge_base_path)
-
-        self._load_checkpoint()
 
     def _get_node_id(self, goal: str, parent_id: Optional[str]) -> str:
         """Generates a stable ID for the same task in the same position."""
         hash_input = f"{parent_id or 'root'}-{goal}"
         return hashlib.md5(hash_input.encode()).hexdigest()[:12]
-
-    def _save_checkpoint(self):
-        """Saves current execution state to disk, handling Enums and Dataclasses."""
-        try:
-            # We wrap the whole dictionary in safe_serialize
-            data = {
-                "root_id": self.root_id,
-                "nodes": {
-                    nid: safe_serialize(node) for nid, node in self.nodes.items()
-                },
-            }
-            with open(self.checkpoint_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            console.print(f"[bold red]❌ Failed to save checkpoint: {e}[/]")
-
-    def _hydrate_plan(self, plan_data: Dict) -> SimpleNamespace:
-        """
-        Converts the JSON-serialized plan data back into an object
-        structure compatible with the rest of the logic (SimpleNamespace).
-        """
-        # Reconstruct subtasks as SimpleNamespaces so we can access .goal via dot notation
-        subtasks = []
-        for st_dict in plan_data.get("subtasks", []):
-            # If it's already an object (rare but possible), leave it
-            if not isinstance(st_dict, dict):
-                subtasks.append(st_dict)
-            else:
-                subtasks.append(SimpleNamespace(**st_dict))
-
-        return SimpleNamespace(
-            subtasks=subtasks,
-            dependencies_graph=plan_data.get("dependencies_graph", {}),
-        )
-
-    def _load_checkpoint(self):
-        if os.path.exists(self.checkpoint_path):
-            try:
-                with open(self.checkpoint_path, "r") as f:
-                    data = json.load(f)
-                self.root_id = data.get("root_id")
-                for nid, n_dict in data.get("nodes", {}).items():
-                    self.nodes[nid] = NodeTrace.from_dict(n_dict)
-                console.print(
-                    f"[bold cyan]🔄 Resumed from checkpoint: {len(self.nodes)} nodes loaded.[/]"
-                )
-            except Exception as e:
-                console.print(f"[bold red]❌ Failed to load checkpoint: {e}[/]")
 
     def _pretty_log(self, role: str, title: str, content: str, color: str = "cyan"):
         # Extra safety: Rich cannot render None.
@@ -275,37 +210,14 @@ class DAGOrchestrator:
         Determines if a task is atomic (EXECUTE) or complex (PLAN).
         Normalizes the output to ensure 'is_atomic' always exists.
         """
-        existing_node = self.nodes[node_id]
-
-        # --- RESUME LOGIC ---
-        # 1. Strongest signal: Plan data exists on disk -> Must be a PLAN.
-        if existing_node.plan_data:
-            return SimpleNamespace(is_atomic=False, node_type="PLAN")
-
-        # 2. Previous decision exists but unfinished -> Respect the saved decision.
-        if existing_node.node_type not in ["PENDING", "UNKNOWN"]:
-            # Derive is_atomic from the string type
-            return SimpleNamespace(
-                is_atomic=(existing_node.node_type == "EXECUTE"),
-                node_type=existing_node.node_type,
-            )
-
-        # --- FRESH LOGIC ---
         with console.status(
             f"[bold green]Atomizing task {node_id[:8]}...", spinner="dots"
         ):
-            # Result usually contains just 'node_type' (Enum or str)
             raw_res = await _retry_acall(self.atomizer, goal=goal, context=context)
 
-            # Normalize: Ensure we work with strings and derive boolean
             determined_type = str(raw_res.node_type).upper()
             is_atomic = determined_type == "EXECUTE"
 
-            # Update State & Checkpoint
-            existing_node.node_type = determined_type
-            self._save_checkpoint()
-
-            # Return normalized object matching the Resume Logic structure
             return SimpleNamespace(
                 is_atomic=is_atomic,
                 node_type=determined_type,
@@ -323,50 +235,35 @@ class DAGOrchestrator:
     ) -> str:
         # 1. Identify Node
         node_id = self._create_node(goal, depth, parent_id)
-        existing_node = self.nodes[node_id]
-
-        # 2. Check Completion (Fast Exit)
-        if existing_node.result is not None:
-            console.print(f"[dim]⏩ Skipping {node_id[:8]} (Already Complete)[/]")
-            return existing_node.result
 
         # Setup Context
-        initial_goal = initial_goal or goal
-        context = parent_context or f"Goal: {goal}"
+        if depth == 0:
+            goal += (
+                "\n\n<post_scriptum_for_agent>\n"
+                "Please ensure your answer is informed by /knowledge_base/**/*.\n"
+                "Hypothesize about the inquirer's latent space position.\n"
+                "</post_scriptum_for_agent>"
+            )
 
-        # 3. Determine Path (Atomize)
-        # Now guaranteed to have .is_atomic and .node_type
+        initial_goal = initial_goal or goal
+        context = parent_context or create_roma_context(
+            initial_goal, depth, self.max_depth
+        )
+
+        # 2. Determine Path (Atomize)
         atom_decision = await self.atomize(goal=goal, context=context, node_id=node_id)
 
-        # 4. Route Execution
+        # 3. Route Execution
         if atom_decision.is_atomic:
-            # --- EXECUTION BRANCH ---
-            # Double check: if atomize said EXECUTE, we trust it.
             result = await self.execute(
                 goal=goal, execution_context=context, node_id=node_id, depth=depth
             )
 
         else:
             # --- PLANNING BRANCH ---
+            plan_res = await self.plan(goal=goal, context=context, depth=depth)
 
-            # A) Acquire Plan (Load or Generate)
-            if existing_node.plan_data:
-                console.print(f"[bold magenta]📖 Hydrating plan for {node_id[:8]}[/]")
-                plan_res = self._hydrate_plan(existing_node.plan_data)
-            else:
-                # If we are here, atomize said "PLAN", but we haven't generated the plan yet.
-                plan_res = await self.plan(goal=goal, context=context, depth=depth)
-
-                # Critical State Transition: Save Plan Data IMMEDIATELY
-                existing_node.plan_data = {
-                    "subtasks": [safe_serialize(st) for st in plan_res.subtasks],
-                    "dependencies_graph": plan_res.dependencies_graph,
-                }
-                # Reinforce node_type in case of manual intervention
-                existing_node.node_type = "PLAN"
-                self._save_checkpoint()
-
-            # B) Solve Subtasks (Recursive)
+            # Solve Subtasks (Recursive)
             # We pass the plan_res down. Results are stored in the *child* nodes on disk.
             # We re-collect them here into a list for the aggregator.
             if depth >= self.max_depth:
@@ -432,7 +329,6 @@ class DAGOrchestrator:
             res,
         )
         self.nodes[node_id].end_time = datetime.now(timezone.utc).isoformat()
-        self._save_checkpoint()  # Save after every worker success
         return res
 
     @trace_and_capture
@@ -482,7 +378,6 @@ class DAGOrchestrator:
         self._pretty_log("FINAL", "Aggregated Result", res, "bold blue")
         self.nodes[node_id].result = res
         self.nodes[node_id].end_time = datetime.now(timezone.utc).isoformat()
-        self._save_checkpoint()
         return res
 
     def _create_node(self, goal, depth, parent_id) -> str:
@@ -605,9 +500,6 @@ async def answer(query):
 {query}
 </user_question>"""
     )
-
-
-await answer(query="")
 
 
 async def main():

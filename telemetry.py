@@ -17,21 +17,39 @@ import inspect
 import json
 import os
 
-from openinference.instrumentation.dspy import DSPyInstrumentor
-from openinference.instrumentation.litellm import LiteLLMInstrumentor
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from openinference.instrumentation.dspy import DSPyInstrumentor
+from openinference.instrumentation.litellm import LiteLLMInstrumentor
+
+# Check if we should use OTLP or local memory
+OTLP_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
 
 resource = Resource(attributes={"service.name": "dag-orchestrator"})
 provider = TracerProvider(resource=resource)
-exporter = OTLPSpanExporter()
-provider.add_span_processor(BatchSpanProcessor(exporter))
+
+if OTLP_ENDPOINT:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    exporter = OTLPSpanExporter(endpoint=OTLP_ENDPOINT)
+    # Use BatchSpanProcessor for production-ready OTLP exporting
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+else:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    # The exporter will now hold spans in memory, accessible via exporter.get_finished_spans()
+    exporter = InMemorySpanExporter()
+    # Use SimpleSpanProcessor for immediate local capture (ideal for debugging/testing)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
 
+# Instrumentation remains active in both modes
 DSPyInstrumentor().instrument()
 LiteLLMInstrumentor().instrument()
 
